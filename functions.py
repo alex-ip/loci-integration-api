@@ -37,14 +37,16 @@ async def query_postgres(sql, limit=1000, offset=0):
     
     # Apply limit and offset values to query - this is a bit ugly
     if re.search('limit(\s+)(\d+)', sql, flags=re.IGNORECASE):
-        sql = re.sub('limit(\s+)(\d+)', 'limit {}'.format(limit), sql, flags=re.IGNORECASE)
+        sql = re.sub('limit(\s+)(\d+)', 'limit {}'.format(limit), sql, count=1, flags=re.IGNORECASE | re.DOTALL)
     else:
-        sql = re.sub(';(\s*)$', ' limit {};'.format(limit), sql, flags=(re.IGNORECASE | re.DOTALL))
+        sql = re.sub('(;?)(\s*)$', ' limit {};'.format(limit), sql, count=1, flags=(re.IGNORECASE | re.DOTALL))
         
     if re.search('offset(\s+)(\d+)', sql, flags=re.IGNORECASE):
-        sql = re.sub('offset(\s+)(\d+)', 'offset {}'.format(offset), sql, flags=re.IGNORECASE)
+        sql = re.sub('offset(\s+)(\d+)', 'offset {}'.format(offset), sql, count=1, flags=re.IGNORECASE | re.DOTALL)
     else:
-        sql = re.sub(';(\s*)$', ' offset {};'.format(offset), sql, flags=(re.IGNORECASE | re.DOTALL))
+        sql = re.sub('(;?)(\s*)$', ' offset {};'.format(offset), sql, count=1, flags=(re.IGNORECASE | re.DOTALL))
+        
+    #print(sql)
         
     #print('Connecting to database {} on host {}'.format(config.DB_CONFIG['POSTGRES_DBNAME'], config.DB_CONFIG['POSTGRES_SERVER']))    
     db_connection = psycopg2.connect(host=DB_CONFIG['POSTGRES_SERVER'], 
@@ -470,7 +472,7 @@ order by feature1, feature2
 
     rows = await query_postgres(overlaps_sql, limit=count, offset=offset)
     
-    print(rows)
+    #print(rows)
     
     overlaps = [
         {
