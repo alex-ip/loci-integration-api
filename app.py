@@ -74,7 +74,7 @@ def create_app():
 if __name__ == "__main__":
     # Has run from the command line.
     # This section will not be called if run via Gunicorn or mod_wsgi
-    LISTEN_HOST = "0.0.0.0"
-    LISTEN_PORT = 8080
+    LISTEN_HOST = None #"0.0.0.0"
+    LISTEN_PORT = None #8080
     app = create_app()
     app.run(LISTEN_HOST, LISTEN_PORT, debug=True, auto_reload=False)

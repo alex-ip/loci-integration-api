@@ -13,3 +13,12 @@ ES_URL = CONFIG["ES_URL"] = "http://elasticsearch"
 ES_PORT = CONFIG["ES_ENDPOINT"] = "9200"
 ES_ENDPOINT = CONFIG["ES_ENDPOINT"] = \
     "{}:{}/_search".format(ES_URL, ES_PORT)
+
+DB_CONFIG = {
+"POSTGRES_SERVER": "localhost",
+"POSTGRES_PORT": 5432,
+"POSTGRES_DBNAME": "loci_test",
+"POSTGRES_USER": "loci",
+"POSTGRES_PASSWORD": "loci",
+"AUTOCOMMIT": True,
+}
