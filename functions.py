@@ -191,33 +191,7 @@ async def get_linksets(count=1000, offset=0):
     :return:
     :rtype: tuple
     """
-    if USE_SQL:
-        location_sql = '''\
-SELECT DISTINCT
-    linkset_uri as linkset
-from linkset 
-order by linkset_uri
-'''
-        rows = await query_postgres(location_sql, limit=count, offset=offset)
-        
-        #print(rows)
-        
-        # include_areas, include_proportion, include_within, include_contains
-        linksets = [
-            {
-                "uri": row['linkset'],
-            } 
-            for row in rows
-            ]
-    
-        meta = {
-            'count': len(rows),
-            'offset': offset,
-        }
-
-    else: # Original SPARQL code
-        
-        sparql = """\
+    sparql = """\
 PREFIX loci: <http://linked.data.gov.au/def/loci#>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 SELECT DISTINCT ?l
@@ -232,18 +206,18 @@ WHERE {
     }
 }
 """
-        resp = await query_graphdb_endpoint(sparql, limit=count, offset=offset)
-        linksets = []
-        if 'results' not in resp:
-            return linksets
-        bindings = resp['results']['bindings']
-        for b in bindings:
-            linksets.append(b['l']['value'])
-            
-        meta = {
-            'count': len(linksets),
-            'offset': offset,
-        }
+    resp = await query_graphdb_endpoint(sparql, limit=count, offset=offset)
+    linksets = []
+    if 'results' not in resp:
+        return linksets
+    bindings = resp['results']['bindings']
+    for b in bindings:
+        linksets.append(b['l']['value'])
+        
+    meta = {
+        'count': len(linksets),
+        'offset': offset,
+    }
         
     return meta, linksets
 
