@@ -9,9 +9,7 @@ from config import ES_ENDPOINT
 from config import DB_CONFIG
 from config import USE_SQL
 import re
-
 from json import loads
-
 from errors import ReportableAPIError
 
 async def query_postgres(sql, limit=1000, offset=0):
@@ -43,14 +41,16 @@ async def query_postgres(sql, limit=1000, offset=0):
         
     rows = []
     if query_postgres.pool is None:
-        # DSN string format: postgres://user:pass@host:port/database?option=value
-        query_postgres.pool = await asyncpg.create_pool('postgresql://{user}:{password}@{host}:{port}/{dbname}'.format(
+        query_postgres.pool = await asyncpg.create_pool(
+            user=DB_CONFIG['POSTGRES_USER'], 
+            password=DB_CONFIG['POSTGRES_PASSWORD'],
             host=DB_CONFIG['POSTGRES_SERVER'], 
             port=DB_CONFIG['POSTGRES_PORT'], 
-            dbname=DB_CONFIG['POSTGRES_DBNAME'], 
-            user=DB_CONFIG['POSTGRES_USER'], 
-            password=DB_CONFIG['POSTGRES_PASSWORD']
-            ), command_timeout=60, min_size=1, max_size=2)
+            database=DB_CONFIG['POSTGRES_DBNAME'], 
+            command_timeout=60, 
+            min_size=1, 
+            max_size=100)
+        
     conn = await query_postgres.pool.acquire() 
     
     try:
