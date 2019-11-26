@@ -7,13 +7,12 @@ from config import TRIPLESTORE_CACHE_SPARQL_ENDPOINT
 from config import GEOBASE_ENDPOINT 
 from config import ES_ENDPOINT
 from config import DB_CONFIG
-import psycopg2
+from config import USE_SQL
 import re
 
 from json import loads
 
 from errors import ReportableAPIError
-
 
 async def query_postgres(sql, limit=1000, offset=0):
     """
@@ -28,12 +27,6 @@ async def query_postgres(sql, limit=1000, offset=0):
     :return:
     :rtype: dict
     """
-    loop = asyncio.get_event_loop()
-    try:
-        session = query_postgres.session_cache[loop]
-    except KeyError:
-        session = ClientSession(loop=loop)
-        query_postgres.session_cache[loop] = session
     
     # Apply limit and offset values to query - this is a bit ugly
     if re.search('limit(\s+)(\d+)', sql, flags=re.IGNORECASE):
@@ -48,35 +41,27 @@ async def query_postgres(sql, limit=1000, offset=0):
         
     #print(sql)
         
-    #print('Connecting to database {} on host {}'.format(config.DB_CONFIG['POSTGRES_DBNAME'], config.DB_CONFIG['POSTGRES_SERVER']))    
-    db_connection = psycopg2.connect(host=DB_CONFIG['POSTGRES_SERVER'], 
-                                          port=DB_CONFIG['POSTGRES_PORT'], 
-                                          dbname=DB_CONFIG['POSTGRES_DBNAME'], 
-                                          user=DB_CONFIG['POSTGRES_USER'], 
-                                          password=DB_CONFIG['POSTGRES_PASSWORD'])
+    rows = []
+    if query_postgres.pool is None:
+        # DSN string format: postgres://user:pass@host:port/database?option=value
+        query_postgres.pool = await asyncpg.create_pool('postgresql://{user}:{password}@{host}:{port}/{dbname}'.format(
+            host=DB_CONFIG['POSTGRES_SERVER'], 
+            port=DB_CONFIG['POSTGRES_PORT'], 
+            dbname=DB_CONFIG['POSTGRES_DBNAME'], 
+            user=DB_CONFIG['POSTGRES_USER'], 
+            password=DB_CONFIG['POSTGRES_PASSWORD']
+            ), command_timeout=60, min_size=1, max_size=2)
+    conn = await query_postgres.pool.acquire() 
+    
+    try:
+        rows = await conn.fetch(sql)
+    finally:
+        await query_postgres.pool.release(conn)
         
-    if DB_CONFIG['AUTOCOMMIT']:
-        db_connection.autocommit = True
-        db_connection.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
-    else:
-        db_connection.autocommit = False
-        db_connection.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_READ_COMMITTED)
-    
-    #print('Connected to database {} on host {}'.format(config.DB_CONFIG['POSTGRES_DBNAME'], config.DB_CONFIG['POSTGRES_SERVER']))  
-    
-    cursor = db_connection.cursor() 
-    
-    cursor.execute(sql)
-    if cursor.description is None:
-        return {}
-    
-    field_names = [field_descriptor[0] for field_descriptor in cursor.description]
-    
-    result = [dict(zip(field_names, row)) for row in cursor]        
+    return rows
 
-    return result
+query_postgres.pool = None 
 
-query_postgres.session_cache = {}
 
 
 async def query_graphdb_endpoint(sparql, infer=True, same_as=True, limit=1000, offset=0):
@@ -206,7 +191,33 @@ async def get_linksets(count=1000, offset=0):
     :return:
     :rtype: tuple
     """
-    sparql = """\
+    if USE_SQL:
+        location_sql = '''\
+SELECT DISTINCT
+    linkset_uri as linkset
+from linkset 
+order by linkset_uri
+'''
+        rows = await query_postgres(location_sql, limit=count, offset=offset)
+        
+        #print(rows)
+        
+        # include_areas, include_proportion, include_within, include_contains
+        linksets = [
+            {
+                "uri": row['linkset'],
+            } 
+            for row in rows
+            ]
+    
+        meta = {
+            'count': len(rows),
+            'offset': offset,
+        }
+
+    else: # Original SPARQL code
+        
+        sparql = """\
 PREFIX loci: <http://linked.data.gov.au/def/loci#>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 SELECT DISTINCT ?l
@@ -221,17 +232,19 @@ WHERE {
     }
 }
 """
-    resp = await query_graphdb_endpoint(sparql, limit=count, offset=offset)
-    linksets = []
-    if 'results' not in resp:
-        return linksets
-    bindings = resp['results']['bindings']
-    for b in bindings:
-        linksets.append(b['l']['value'])
-    meta = {
-        'count': len(linksets),
-        'offset': offset,
-    }
+        resp = await query_graphdb_endpoint(sparql, limit=count, offset=offset)
+        linksets = []
+        if 'results' not in resp:
+            return linksets
+        bindings = resp['results']['bindings']
+        for b in bindings:
+            linksets.append(b['l']['value'])
+            
+        meta = {
+            'count': len(linksets),
+            'offset': offset,
+        }
+        
     return meta, linksets
 
 async def get_datasets(count=1000, offset=0):
@@ -243,7 +256,33 @@ async def get_datasets(count=1000, offset=0):
     :return:
     :rtype: tuple
     """
-    sparql = """\
+    if USE_SQL:
+        dataset_sql = '''\
+SELECT DISTINCT
+    dataset_uri as dataset
+from dataset 
+order by dataset_uri
+'''
+        rows = await query_postgres(dataset_sql, limit=count, offset=offset)
+        
+        #print(rows)
+        
+        # include_areas, include_proportion, include_within, include_contains
+        datasets = [
+            {
+                "uri": row['dataset'],
+            } 
+            for row in rows
+            ]
+    
+        meta = {
+            'count': len(rows),
+            'offset': offset,
+        }
+
+    else: # Original SPARQL code
+        
+        sparql = """\
 PREFIX dcat: <http://www.w3.org/ns/dcat#>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 SELECT DISTINCT ?d
@@ -258,17 +297,19 @@ WHERE {
     }
 }
 """
-    resp = await query_graphdb_endpoint(sparql, limit=count, offset=offset)
-    datasets = []
-    if 'results' not in resp:
-        return datasets
-    bindings = resp['results']['bindings']
-    for b in bindings:
-        datasets.append(b['d']['value'])
-    meta = {
-        'count': len(datasets),
-        'offset': offset,
-    }
+        resp = await query_graphdb_endpoint(sparql, limit=count, offset=offset)
+        datasets = []
+        if 'results' not in resp:
+            return datasets
+        bindings = resp['results']['bindings']
+        for b in bindings:
+            datasets.append(b['d']['value'])
+            
+        meta = {
+            'count': len(datasets),
+            'offset': offset,
+        }
+        
     return meta, datasets
 
 async def get_locations(count=1000, offset=0):
@@ -280,7 +321,33 @@ async def get_locations(count=1000, offset=0):
     :return:
     :rtype: tuple
     """
-    sparql = """\
+    if USE_SQL:
+        location_sql = '''\
+SELECT DISTINCT
+    feature_uri as feature
+from feature 
+order by feature_uri
+'''
+        rows = await query_postgres(location_sql, limit=count, offset=offset)
+        
+        #print(rows)
+        
+        # include_areas, include_proportion, include_within, include_contains
+        locations = [
+            {
+                "uri": row['feature'],
+            } 
+            for row in rows
+            ]
+    
+        meta = {
+            'count': len(rows),
+            'offset': offset,
+        }
+
+    else: # Original SPARQL code
+        
+        sparql = """\
 PREFIX geo: <http://www.opengis.net/ont/geosparql#>
 PREFIX prov: <http://www.w3.org/ns/prov#>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
@@ -314,17 +381,19 @@ WHERE {
     } .
 }
 """
-    resp = await query_graphdb_endpoint(sparql, limit=count, offset=offset)
-    locations = []
-    if 'results' not in resp:
-        return locations
-    bindings = resp['results']['bindings']
-    for b in bindings:
-        locations.append(b['l']['value'])
-    meta = {
-        'count': len(locations),
-        'offset': offset,
-    }
+        resp = await query_graphdb_endpoint(sparql, limit=count, offset=offset)
+        locations = []
+        if 'results' not in resp:
+            return locations
+        bindings = resp['results']['bindings']
+        for b in bindings:
+            locations.append(b['l']['value'])
+            
+        meta = {
+            'count': len(locations),
+            'offset': offset,
+        }
+    
     return meta, locations
 
 
@@ -339,7 +408,44 @@ async def get_location_is_within(target_uri, count=1000, offset=0):
     :return:
     :rtype: tuple
     """
-    sparql = """\
+    if USE_SQL:
+        within_sql = '''\
+SELECT DISTINCT
+    f1.feature_uri as feature1, 
+    f2.feature_uri as feature2
+FROM (select *
+      from feature 
+      where feature_uri = '{feature_uri}'
+     ) f1
+INNER JOIN (select *
+            from feature 
+           ) f2     
+    ON (ST_CoveredBy(f1.feature_geometry, f2.feature_geometry)
+        AND f1.feature_id !=f2.feature_id
+        )
+order by feature1, feature2
+'''.format(feature_uri=target_uri)
+
+        rows = await query_postgres(within_sql, limit=count, offset=offset)
+        
+        #print(rows)
+        
+        # include_areas, include_proportion, include_within, include_contains
+        locations = [
+            {
+                "uri": row['feature2'],
+            } 
+            for row in rows
+            ]
+    
+        meta = {
+            'count': len(rows),
+            'offset': offset,
+        }
+
+    else: # Original SPARQL code
+        
+        sparql = """\
 PREFIX geo: <http://www.opengis.net/ont/geosparql#>
 PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 SELECT DISTINCT ?l
@@ -353,19 +459,22 @@ WHERE {
     { <URI> geo:sfWithin+ ?l }
 }
 """
-    sparql = sparql.replace("<URI>", "<{}>".format(str(target_uri)))
-    resp = await query_graphdb_endpoint(sparql, limit=count, offset=offset)
-    locations = []
-    if 'results' not in resp:
-        return locations
-    bindings = resp['results']['bindings']
-    for b in bindings:
-        locations.append(b['l']['value'])
-    meta = {
-        'count': len(locations),
-        'offset': offset,
-    }
+        sparql = sparql.replace("<URI>", "<{}>".format(str(target_uri)))
+        resp = await query_graphdb_endpoint(sparql, limit=count, offset=offset)
+        locations = []
+        if 'results' not in resp:
+            return locations
+        bindings = resp['results']['bindings']
+        for b in bindings:
+            locations.append(b['l']['value'])
+            
+        meta = {
+            'count': len(locations),
+            'offset': offset,
+        }
+        
     return meta, locations
+
 
 async def get_location_contains(target_uri, count=1000, offset=0):
     """
@@ -378,32 +487,71 @@ async def get_location_contains(target_uri, count=1000, offset=0):
     :return:
     :rtype: tuple
     """
-    sparql = """\
-PREFIX geo: <http://www.opengis.net/ont/geosparql#>
-PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-SELECT DISTINCT ?l
-WHERE {
-    {
-        ?s rdf:subject <URI> ;
-           rdf:predicate geo:sfContains;
-           rdf:object ?l  .
+    if USE_SQL:
+        contains_sql = '''\
+SELECT DISTINCT
+    f1.feature_uri as feature1, 
+    f2.feature_uri as feature2
+FROM (select *
+      from feature 
+      where feature_uri = '{feature_uri}'
+     ) f1
+INNER JOIN (select *
+            from feature 
+           ) f2     
+    ON (ST_CoveredBy(f2.feature_geometry, f1.feature_geometry)
+        AND f1.feature_id !=f2.feature_id
+        )
+order by feature1, feature2
+'''.format(feature_uri=target_uri)
+
+        rows = await query_postgres(contains_sql, limit=count, offset=offset)
+        
+        #print(rows)
+        
+        # include_areas, include_proportion, include_within, include_contains
+        locations = [
+            {
+                "uri": row['feature2'],
+            } 
+            for row in rows
+            ]
+    
+        meta = {
+            'count': len(rows),
+            'offset': offset,
+        }
+
+    else: # Original SPARQL code
+        
+        sparql = """\
+    PREFIX geo: <http://www.opengis.net/ont/geosparql#>
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    SELECT DISTINCT ?l
+    WHERE {
+        {
+            ?s rdf:subject <URI> ;
+               rdf:predicate geo:sfContains;
+               rdf:object ?l  .
+        }
+        UNION
+        { <URI> geo:sfContains+ ?l }
     }
-    UNION
-    { <URI> geo:sfContains+ ?l }
-}
-"""
-    sparql = sparql.replace("<URI>", "<{}>".format(str(target_uri)))
-    resp = await query_graphdb_endpoint(sparql, limit=count, offset=offset)
-    locations = []
-    if 'results' not in resp:
-        return locations
-    bindings = resp['results']['bindings']
-    for b in bindings:
-        locations.append(b['l']['value'])
-    meta = {
-        'count': len(locations),
-        'offset': offset,
-    }
+    """
+        sparql = sparql.replace("<URI>", "<{}>".format(str(target_uri)))
+        resp = await query_graphdb_endpoint(sparql, limit=count, offset=offset)
+        locations = []
+        if 'results' not in resp:
+            return locations
+        bindings = resp['results']['bindings']
+        for b in bindings:
+            locations.append(b['l']['value'])
+            
+        meta = {
+            'count': len(locations),
+            'offset': offset,
+        }
+        
     return meta, locations
 
 async def query_build_response_bindings(sparql, count, offset, bindings):
@@ -438,8 +586,10 @@ async def get_location_overlaps(target_uri, include_areas, include_proportion, i
     :return:
     """
     
-    # PostGIS Methodology from https://postgis.net/2014/03/14/tip_intersection_faster/
-    overlaps_sql = '''\
+    if USE_SQL:
+        #TODO: Optimise this query to only return quantitative results if required
+        # PostGIS Methodology from https://postgis.net/2014/03/14/tip_intersection_faster/
+        overlaps_sql = '''\
 SELECT *,
 intersection_area / feature1_area as feature1_proportion,
 intersection_area / feature2_area as feature2_proportion
@@ -465,249 +615,271 @@ INNER JOIN (select *
             from feature 
            ) f2     
     ON (ST_Intersects(f1.feature_geometry, f2.feature_geometry) 
-    AND NOT ST_Touches(f1.feature_geometry, f2.feature_geometry))
+        AND NOT ST_Touches(f1.feature_geometry, f2.feature_geometry)
+        AND f1.feature_id !=f2.feature_id
+        )
 ) areas
 order by feature1, feature2
 '''.format(feature_uri=target_uri)
 
-    rows = await query_postgres(overlaps_sql, limit=count, offset=offset)
+        rows = await query_postgres(overlaps_sql, limit=count, offset=offset)
+        
+        #print(rows)
+        
+        # include_areas, include_proportion, include_within, include_contains
+        overlaps = []
+        for row in rows:
+            overlap = {
+                "uri": row['feature2'],
+                } 
+            
+            if include_areas:
+                overlap["featureArea"] = row['feature2_area']
+                overlap["intersectionArea"] = row['intersection_area']
+            
+            if include_proportion:
+                overlap["forwardProportion"] = row['feature2_proportion']
+                overlap["reverseProportion"] = row['feature1_proportion']
+                
+            if include_within:
+                overlap["isWithin"] = (row['intersection_area'] == row['feature1_area'])
+     
+            if include_contains:
+                overlap["contains"] = (row['intersection_area'] == row['feature2_area'])
+     
+            overlaps.append({key: str(value) for key, value in overlap.items()})
     
-    #print(rows)
+        meta = {
+            'count': len(rows),
+            'offset': offset,
+        }
+        if rows[0]['feature1_area'] and include_areas:
+            meta['featureArea'] = str(rows[0]['feature1_area'])
     
-    overlaps = [
+    else: # Original SPARQL code
+
+        overlaps_sparql = """\
+PREFIX geo: <http://www.opengis.net/ont/geosparql#>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX geox: <http://linked.data.gov.au/def/geox#>
+PREFIX qb4st: <http://www.w3.org/ns/qb4st/>
+PREFIX epsg: <http://www.opengis.net/def/crs/EPSG/0/>
+PREFIX dt: <http://linked.data.gov.au/def/datatype/>
+SELECT <SELECTS>
+WHERE {
+    {
         {
-            "uri": row['feature2'],
-            "isWithin": str(row['intersection_area'] == row['feature1_area']),
-            "contains": str(row['intersection_area'] == row['feature2_area']),
-            "featureArea": str(row['feature2_area']),
-            "intersectionArea": str(row['intersection_area']),
-            "forwardProportion": str(row['feature2_proportion']),
-            "reverseProportion": str(row['feature1_proportion'])
-        } 
-        for row in rows
-        ]
-           
-#===============================================================================
-#     overlaps_sparql = """\
-# PREFIX geo: <http://www.opengis.net/ont/geosparql#>
-# PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-# PREFIX geox: <http://linked.data.gov.au/def/geox#>
-# PREFIX qb4st: <http://www.w3.org/ns/qb4st/>
-# PREFIX epsg: <http://www.opengis.net/def/crs/EPSG/0/>
-# PREFIX dt: <http://linked.data.gov.au/def/datatype/>
-# SELECT <SELECTS>
-# WHERE {
-#     {
-#         {
-#            ?s1 rdf:subject <URI> ;
-#            rdf:predicate geox:transitiveSfOverlap;
-#            rdf:object ?o  .
-#         } UNION {
-#            ?s2 rdf:subject <URI> ;
-#            rdf:predicate geo:sfOverlaps;
-#            rdf:object ?o  .
-#         }
-#     }
-#     UNION
-#     { <URI> geox:transitiveSfOverlap ?o }
-#     UNION
-#     { <URI> geo:sfOverlaps ?o }
-#     <EXTRAS>
-# }
-# GROUP BY ?o
-# """
-#     contains_sparql = """\
-#     PREFIX geo: <http://www.opengis.net/ont/geosparql#>
-#     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-#     PREFIX geox: <http://linked.data.gov.au/def/geox#>
-#     PREFIX qb4st: <http://www.w3.org/ns/qb4st/>
-#     PREFIX epsg: <http://www.opengis.net/def/crs/EPSG/0/>
-#     PREFIX dt: <http://linked.data.gov.au/def/datatype/>
-#     SELECT ?c <SELECTS>
-#     WHERE {
-#         {  
-#             ?s2 rdf:subject <URI> ;
-#             rdf:predicate geo:sfContains;
-#             rdf:object ?o  .
-#         }
-#         UNION
-#         { <URI> geo:sfContains+ ?o }
-#         OPTIONAL { FILTER(bound(?o))
-#             BIND(true as ?c) .
-#         }
-#         <EXTRAS>
-#     }
-#     GROUP BY ?c ?o
-#     """
-#     within_sparql = """\
-#     PREFIX geo: <http://www.opengis.net/ont/geosparql#>
-#     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-#     PREFIX geox: <http://linked.data.gov.au/def/geox#>
-#     PREFIX qb4st: <http://www.w3.org/ns/qb4st/>
-#     PREFIX epsg: <http://www.opengis.net/def/crs/EPSG/0/>
-#     PREFIX dt: <http://linked.data.gov.au/def/datatype/>
-#     SELECT ?w <SELECTS>
-#     WHERE {
-#         {  
-#             ?s2 rdf:subject <URI> ;
-#             rdf:predicate geo:sfWithin;
-#             rdf:object ?o  .
-#         }
-#         UNION
-#         { <URI> geo:sfWithin+ ?o }
-#         OPTIONAL { FILTER(bound(?o))
-#             BIND(true as ?w) .
-#         }
-#         <EXTRAS>
-#     }
-#     GROUP BY ?w ?o
-#     """
-#     use_areas_sparql = include_proportion or include_areas
-#     use_proportion_sparql = include_proportion
-# 
-#     selects = "?o "
-#     area_selects = "(MAX(?a1) as ?uarea) (MAX(?a2) as ?oarea) "
-#     iarea_selects = "(MAX(?a3) as ?iarea) "
-# 
-#     areas_sparql = """\
-#     OPTIONAL {
-#         <URI> geox:hasAreaM2 ?ha1 .
-#         ?ha1 qb4st:crs epsg:3577 .
-#         ?ha1 dt:value ?a1 .
-#     }
-#     OPTIONAL {
-#         ?o geox:hasAreaM2 ?ha2 .
-#         ?ha2 qb4st:crs epsg:3577 .
-#         ?ha2 dt:value ?a2 .
-#     }
-#     """
-#     iarea_sparql = """\
-#     OPTIONAL {
-#         { <URI> geo:sfContains ?i }
-#         UNION 
-#         {
-#             ?s3 rdf:subject <URI> ;
-#                 rdf:predicate geo:sfContains ;
-#                 rdf:object ?i 
-#         } .
-#         
-#         { ?o geo:sfContains ?i }
-#         UNION 
-#         {
-#             ?s4 rdf:subject ?o ;
-#                 rdf:predicate geo:sfContains ;
-#                 rdf:object ?i 
-#         } .
-#         OPTIONAL {
-#             ?i geox:hasAreaM2 ?ha3 .
-#             ?ha3 qb4st:crs epsg:3577 .
-#             ?ha3 dt:value ?a3 .
-#         }
-#     }
-#     """
-#     extras = ""
-#     use_selects = selects
-#     if use_areas_sparql:
-#         extras += areas_sparql
-#         use_selects += area_selects
-#     if use_proportion_sparql:
-#         extras += iarea_sparql
-#         use_selects += iarea_selects
-#     sparql = overlaps_sparql.replace("<SELECTS>", use_selects)
-#     sparql = sparql.replace("<EXTRAS>", extras)
-#     sparql = sparql.replace("<URI>", "<{}>".format(str(target_uri)))
-#     overlaps = []
-#     bindings = []
-#     await query_build_response_bindings(sparql, count, offset, bindings)
-#     extras = ""
-#     if include_contains:
-#         use_selects = selects
-#         if use_areas_sparql:
-#             extras = areas_sparql
-#             use_selects += area_selects
-#         sparql = contains_sparql.replace("<SELECTS>", use_selects)
-#         sparql = sparql.replace("<EXTRAS>", extras)
-#         sparql = sparql.replace("<URI>", "<{}>".format(str(target_uri)))
-#         await query_build_response_bindings(sparql, count, offset, bindings)
-#         extras = ""
-#     if include_within:
-#         use_selects = selects
-#         if use_areas_sparql:
-#             extras = areas_sparql
-#             use_selects += area_selects
-#         sparql = within_sparql.replace("<SELECTS>", use_selects)
-#         sparql = sparql.replace("<EXTRAS>", extras)
-#         sparql = sparql.replace("<URI>", "<{}>".format(str(target_uri)))
-#         await query_build_response_bindings(sparql, count, offset, bindings)
-#     if len(bindings) < 1:
-#         return {'count', 0}, overlaps
-#     if not include_proportion and not include_areas:
-#         my_area = False
-#         for b in bindings:
-#             overlaps.append(b['o']['value'])
-#     else:
-#         d100 = Decimal("100.0")
-#         try:
-#             uarea = bindings[0]['uarea']
-#         except (LookupError, AttributeError):
-#             raise ReportableAPIError("Source feature does not have a known geometry area."
-#                                      "Cannot return areas or calculate proportions.")
-#         my_area = round(Decimal(uarea['value']), 8)
-#         for b in bindings:
-#             o_dict = {"uri": b['o']['value']}
-#             if include_within:
-#                 try:
-#                     is_w = b['w']
-#                 except (LookupError, AttributeError):
-#                     is_w = False
-#                 o_dict["isWithin"] = bool(is_w)
-#             if include_contains:
-#                 try:
-#                     has_c = b['c']
-#                 except (LookupError, AttributeError):
-#                     has_c = False
-#                 o_dict["contains"] = bool(has_c)
-# 
-#             overlaps.append(o_dict)
-#             try:
-#                 oarea = b['oarea']
-#             except (LookupError, AttributeError):
-#                 continue
-#             o_area = round(Decimal(oarea['value']), 8)
-#             if include_areas:
-#                 o_dict['featureArea'] = str(o_area)
-#             if include_proportion:
-#                 if include_within and is_w:
-#                     my_proportion = d100
-#                     other_proportion = (my_area / o_area) * d100
-#                     i_area = my_area
-#                 elif include_contains and has_c:
-#                     my_proportion = (o_area / my_area) * d100
-#                     other_proportion = d100
-#                     i_area = o_area
-#                 else:
-#                     try:
-#                         i_area = Decimal(b['iarea']['value'])
-#                     except (LookupError, AttributeError):
-#                         continue
-#                     my_proportion = (i_area / my_area) * d100
-#                     other_proportion = (i_area / o_area) * d100
-#                 if include_areas:
-#                     o_dict['intersectionArea'] = str(round(i_area, 8))
-#                 my_proportion = round(my_proportion, 8)
-#                 other_proportion = round(other_proportion, 8)
-#                 o_dict['forwardProportion'] = str(my_proportion)
-#                 o_dict['reverseProportion'] = str(other_proportion)
-#===============================================================================
-
-    meta = {
-        'count': len(rows),
-        'offset': offset,
+           ?s1 rdf:subject <URI> ;
+           rdf:predicate geox:transitiveSfOverlap;
+           rdf:object ?o  .
+        } UNION {
+           ?s2 rdf:subject <URI> ;
+           rdf:predicate geo:sfOverlaps;
+           rdf:object ?o  .
+        }
     }
-    if rows[0]['feature1_area'] and include_areas:
-        meta['featureArea'] = str(rows[0]['feature1_area'])
-    return meta, overlaps
+    UNION
+    { <URI> geox:transitiveSfOverlap ?o }
+    UNION
+    { <URI> geo:sfOverlaps ?o }
+    <EXTRAS>
+}
+GROUP BY ?o
+"""
+        contains_sparql = """\
+    PREFIX geo: <http://www.opengis.net/ont/geosparql#>
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX geox: <http://linked.data.gov.au/def/geox#>
+    PREFIX qb4st: <http://www.w3.org/ns/qb4st/>
+    PREFIX epsg: <http://www.opengis.net/def/crs/EPSG/0/>
+    PREFIX dt: <http://linked.data.gov.au/def/datatype/>
+    SELECT ?c <SELECTS>
+    WHERE {
+        {  
+            ?s2 rdf:subject <URI> ;
+            rdf:predicate geo:sfContains;
+            rdf:object ?o  .
+        }
+        UNION
+        { <URI> geo:sfContains+ ?o }
+        OPTIONAL { FILTER(bound(?o))
+            BIND(true as ?c) .
+        }
+        <EXTRAS>
+    }
+    GROUP BY ?c ?o
+"""
+        within_sparql = """\
+    PREFIX geo: <http://www.opengis.net/ont/geosparql#>
+    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+    PREFIX geox: <http://linked.data.gov.au/def/geox#>
+    PREFIX qb4st: <http://www.w3.org/ns/qb4st/>
+    PREFIX epsg: <http://www.opengis.net/def/crs/EPSG/0/>
+    PREFIX dt: <http://linked.data.gov.au/def/datatype/>
+    SELECT ?w <SELECTS>
+    WHERE {
+        {  
+            ?s2 rdf:subject <URI> ;
+            rdf:predicate geo:sfWithin;
+            rdf:object ?o  .
+        }
+        UNION
+        { <URI> geo:sfWithin+ ?o }
+        OPTIONAL { FILTER(bound(?o))
+            BIND(true as ?w) .
+        }
+        <EXTRAS>
+    }
+    GROUP BY ?w ?o
+"""
+        use_areas_sparql = include_proportion or include_areas
+        use_proportion_sparql = include_proportion
+     
+        selects = "?o "
+        area_selects = "(MAX(?a1) as ?uarea) (MAX(?a2) as ?oarea) "
+        iarea_selects = "(MAX(?a3) as ?iarea) "
+     
+        areas_sparql = """\
+    OPTIONAL {
+        <URI> geox:hasAreaM2 ?ha1 .
+        ?ha1 qb4st:crs epsg:3577 .
+        ?ha1 dt:value ?a1 .
+    }
+    OPTIONAL {
+        ?o geox:hasAreaM2 ?ha2 .
+        ?ha2 qb4st:crs epsg:3577 .
+        ?ha2 dt:value ?a2 .
+    }
+"""
+        iarea_sparql = """\
+    OPTIONAL {
+        { <URI> geo:sfContains ?i }
+        UNION 
+        {
+            ?s3 rdf:subject <URI> ;
+                rdf:predicate geo:sfContains ;
+                rdf:object ?i 
+        } .
+         
+        { ?o geo:sfContains ?i }
+        UNION 
+        {
+            ?s4 rdf:subject ?o ;
+                rdf:predicate geo:sfContains ;
+                rdf:object ?i 
+        } .
+        OPTIONAL {
+            ?i geox:hasAreaM2 ?ha3 .
+            ?ha3 qb4st:crs epsg:3577 .
+            ?ha3 dt:value ?a3 .
+        }
+    }
+"""
+        extras = ""
+        use_selects = selects
+        if use_areas_sparql:
+            extras += areas_sparql
+            use_selects += area_selects
+        if use_proportion_sparql:
+            extras += iarea_sparql
+            use_selects += iarea_selects
+        sparql = overlaps_sparql.replace("<SELECTS>", use_selects)
+        sparql = sparql.replace("<EXTRAS>", extras)
+        sparql = sparql.replace("<URI>", "<{}>".format(str(target_uri)))
+        overlaps = []
+        bindings = []
+        await query_build_response_bindings(sparql, count, offset, bindings)
+        extras = ""
+        if include_contains:
+            use_selects = selects
+            if use_areas_sparql:
+                extras = areas_sparql
+                use_selects += area_selects
+            sparql = contains_sparql.replace("<SELECTS>", use_selects)
+            sparql = sparql.replace("<EXTRAS>", extras)
+            sparql = sparql.replace("<URI>", "<{}>".format(str(target_uri)))
+            await query_build_response_bindings(sparql, count, offset, bindings)
+            extras = ""
+        if include_within:
+            use_selects = selects
+            if use_areas_sparql:
+                extras = areas_sparql
+                use_selects += area_selects
+            sparql = within_sparql.replace("<SELECTS>", use_selects)
+            sparql = sparql.replace("<EXTRAS>", extras)
+            sparql = sparql.replace("<URI>", "<{}>".format(str(target_uri)))
+            await query_build_response_bindings(sparql, count, offset, bindings)
+        if len(bindings) < 1:
+            return {'count', 0}, overlaps
+        if not include_proportion and not include_areas:
+            my_area = False
+            for b in bindings:
+                overlaps.append(b['o']['value'])
+        else:
+            d100 = Decimal("100.0")
+            try:
+                uarea = bindings[0]['uarea']
+            except (LookupError, AttributeError):
+                raise ReportableAPIError("Source feature does not have a known geometry area."
+                                         "Cannot return areas or calculate proportions.")
+            my_area = round(Decimal(uarea['value']), 8)
+            for b in bindings:
+                o_dict = {"uri": b['o']['value']}
+                if include_within:
+                    try:
+                        is_w = b['w']
+                    except (LookupError, AttributeError):
+                        is_w = False
+                    o_dict["isWithin"] = bool(is_w)
+                if include_contains:
+                    try:
+                        has_c = b['c']
+                    except (LookupError, AttributeError):
+                        has_c = False
+                    o_dict["contains"] = bool(has_c)
+     
+                overlaps.append(o_dict)
+                try:
+                    oarea = b['oarea']
+                except (LookupError, AttributeError):
+                    continue
+                o_area = round(Decimal(oarea['value']), 8)
+                if include_areas:
+                    o_dict['featureArea'] = str(o_area)
+                if include_proportion:
+                    if include_within and is_w:
+                        my_proportion = d100
+                        other_proportion = (my_area / o_area) * d100
+                        i_area = my_area
+                    elif include_contains and has_c:
+                        my_proportion = (o_area / my_area) * d100
+                        other_proportion = d100
+                        i_area = o_area
+                    else:
+                        try:
+                            i_area = Decimal(b['iarea']['value'])
+                        except (LookupError, AttributeError):
+                            continue
+                        my_proportion = (i_area / my_area) * d100
+                        other_proportion = (i_area / o_area) * d100
+                    if include_areas:
+                        o_dict['intersectionArea'] = str(round(i_area, 8))
+                    my_proportion = round(my_proportion, 8)
+                    other_proportion = round(other_proportion, 8)
+                    o_dict['forwardProportion'] = str(my_proportion)
+                    o_dict['reverseProportion'] = str(other_proportion)
 
+
+        meta = {
+            'count': len(overlaps),
+            'offset': offset,
+        }
+        if my_area and include_areas:
+            meta['featureArea'] = str(my_area)
+            
+        # End of original SPARQL code
+        
+    return meta, overlaps
 
 async def get_at_location(lat, lon, loci_type="any", count=1000, offset=0):
     """
