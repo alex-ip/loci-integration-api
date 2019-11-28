@@ -567,14 +567,14 @@ async def get_location_overlaps(target_uri, include_areas, include_proportion, i
 SELECT *,
 CASE 
     WHEN feature1_area = 0
-           THEN Null
-       ELSE 
+        THEN Null
+    ELSE 
         intersection_area / feature1_area
     END as feature1_proportion, 
 CASE 
     WHEN feature2_area = 0
-           THEN Null
-       ELSE 
+        THEN Null
+    ELSE 
         intersection_area / feature2_area
     END as feature2_proportion
 from (
