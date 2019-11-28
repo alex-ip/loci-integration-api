@@ -565,8 +565,18 @@ async def get_location_overlaps(target_uri, include_areas, include_proportion, i
         # PostGIS Methodology from https://postgis.net/2014/03/14/tip_intersection_faster/
         overlaps_sql = '''\
 SELECT *,
-intersection_area / feature1_area as feature1_proportion,
-intersection_area / feature2_area as feature2_proportion
+CASE 
+    WHEN feature1_area = 0
+           THEN Null
+       ELSE 
+        intersection_area / feature1_area
+    END as feature1_proportion, 
+CASE 
+    WHEN feature2_area = 0
+           THEN Null
+       ELSE 
+        intersection_area / feature2_area
+    END as feature2_proportion
 from (
 SELECT 
     f1.feature_uri as feature1, 
@@ -616,10 +626,14 @@ order by feature1, feature2
                 overlap["reverseProportion"] = row['feature1_proportion']
                 
             if include_within:
-                overlap["isWithin"] = (row['intersection_area'] == row['feature1_area'])
+                overlap["isWithin"] = ((row['feature1_area'] is None) # feature1 is a point or line
+                                       or (row['intersection_area'] == row['feature1_area'])
+                                       )
      
             if include_contains:
-                overlap["contains"] = (row['intersection_area'] == row['feature2_area'])
+                overlap["contains"] = ((row['feature2_area'] is None) # feature2 is a point or line
+                                       or (row['intersection_area'] == row['feature2_area'])
+                                       )
      
             overlaps.append({key: str(value) for key, value in overlap.items()})
     
