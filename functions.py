@@ -687,7 +687,6 @@ INNER JOIN (select *
 ) areas
 order by feature1, feature2
 '''
-        print(overlaps_sql)
         rows = await query_postgres(overlaps_sql, limit=count, offset=offset)
         
         #print(rows)
