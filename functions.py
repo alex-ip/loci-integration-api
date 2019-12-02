@@ -8,6 +8,7 @@ from config import GEOBASE_ENDPOINT
 from config import ES_ENDPOINT
 from config import DB_CONFIG
 from config import USE_SQL
+from config import IGNORE_DATASETS
 import re
 from json import loads
 from errors import ReportableAPIError
@@ -235,6 +236,21 @@ async def get_datasets(count=1000, offset=0):
 SELECT DISTINCT
     dataset_uri as dataset
 from dataset 
+'''
+    # Ignore any datasets specified in config.IGNORE_DATASETS
+        if IGNORE_DATASETS:
+            dataset_sql = dataset_sql + '''\
+where dataset_id not in (select dataset_id 
+    from dataset
+    where dataset_uri in (
+'''
+            dataset_sql = dataset_sql + "        '" + "',\n        '".join(IGNORE_DATASETS) + "'"
+                        
+            dataset_sql = dataset_sql + '''
+        )
+    )
+'''         
+        dataset_sql = dataset_sql + '''\
 order by dataset_uri
 '''
         rows = await query_postgres(dataset_sql, limit=count, offset=offset)
@@ -300,6 +316,21 @@ async def get_locations(count=1000, offset=0):
 SELECT DISTINCT
     feature_uri as feature
 from feature 
+'''
+    # Ignore any datasets specified in config.IGNORE_DATASETS
+        if IGNORE_DATASETS:
+            location_sql = location_sql + '''\
+where dataset_id not in (select dataset_id 
+    from dataset
+    where dataset_uri in (
+'''
+            location_sql = location_sql + "        '" + "',\n        '".join(IGNORE_DATASETS) + "'"
+                        
+            location_sql = location_sql + '''
+        )
+    )
+'''         
+        location_sql = location_sql + '''\
 order by feature_uri
 '''
         rows = await query_postgres(location_sql, limit=count, offset=offset)
@@ -393,12 +424,29 @@ FROM (select *
      ) f1
 INNER JOIN (select *
             from feature 
+'''.format(feature_uri=target_uri)
+
+        # Ignore any datasets specified in config.IGNORE_DATASETS
+        if IGNORE_DATASETS:
+            within_sql = within_sql + '''\
+            where dataset_id not in (select dataset_id 
+                from dataset
+                where dataset_uri in (
+'''
+            within_sql = within_sql + "                    '" + "',\n                    '".join(IGNORE_DATASETS) + "'"
+                        
+            within_sql = within_sql + '''
+                    )
+                )
+'''     
+       
+        within_sql = within_sql + '''\
            ) f2     
     ON (ST_CoveredBy(f1.feature_geometry, f2.feature_geometry)
-        AND f1.feature_id !=f2.feature_id
+        AND f1.feature_id != f2.feature_id
         )
 order by feature1, feature2
-'''.format(feature_uri=target_uri)
+'''
 
         rows = await query_postgres(within_sql, limit=count, offset=offset)
         
@@ -472,6 +520,23 @@ FROM (select *
      ) f1
 INNER JOIN (select *
             from feature 
+'''.format(feature_uri=target_uri)
+
+        # Ignore any datasets specified in config.IGNORE_DATASETS
+        if IGNORE_DATASETS:
+            contains_sql = contains_sql + '''\
+            where dataset_id not in (select dataset_id 
+                from dataset
+                where dataset_uri in (
+'''
+            contains_sql = contains_sql + "                    '" + "',\n                    '".join(IGNORE_DATASETS) + "'"
+                        
+            contains_sql = contains_sql + '''
+                    )
+                )
+'''     
+       
+        contains_sql = contains_sql + '''\
            ) f2     
     ON (ST_CoveredBy(f2.feature_geometry, f1.feature_geometry)
         AND f1.feature_id !=f2.feature_id
@@ -597,15 +662,32 @@ FROM (select *
      ) f1
 INNER JOIN (select *
             from feature 
+'''.format(feature_uri=target_uri)
+
+        # Ignore any datasets specified in config.IGNORE_DATASETS
+        if IGNORE_DATASETS:
+            overlaps_sql = overlaps_sql + '''\
+            where dataset_id not in (select dataset_id 
+                from dataset
+                where dataset_uri in (
+'''
+            overlaps_sql = overlaps_sql + "                    '" + "',\n                    '".join(IGNORE_DATASETS) + "'"
+                        
+            overlaps_sql = overlaps_sql + '''
+                    )
+                )
+'''     
+       
+        overlaps_sql = overlaps_sql + '''\
            ) f2     
     ON (ST_Intersects(f1.feature_geometry, f2.feature_geometry) 
         AND NOT ST_Touches(f1.feature_geometry, f2.feature_geometry)
-        AND f1.feature_id !=f2.feature_id
+        AND f1.feature_id != f2.feature_id
         )
 ) areas
 order by feature1, feature2
-'''.format(feature_uri=target_uri)
-
+'''
+        print(overlaps_sql)
         rows = await query_postgres(overlaps_sql, limit=count, offset=offset)
         
         #print(rows)
