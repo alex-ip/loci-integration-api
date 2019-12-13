@@ -722,7 +722,7 @@ order by feature1, feature2
             'count': len(rows),
             'offset': offset,
         }
-        if rows[0]['feature1_area'] and include_areas:
+        if rows and rows[0]['feature1_area'] and include_areas:
             meta['featureArea'] = str(rows[0]['feature1_area'])
     
     else: # Original SPARQL code
